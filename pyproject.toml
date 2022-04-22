@@ -8,6 +8,8 @@ authors = ["Paulo S. Costa <pauloscosta5@gmail.com>"]
 python = ">=3.9,<3.11"
 pymc3 = "^3.11.5"
 arviz = "^0.12.0"
+seaborn = "^0.11.2"
+matplotlib = "^3.5.1"
 
 [tool.poetry.dev-dependencies]
 ipykernel = "^6.12.1"
