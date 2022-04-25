@@ -82,7 +82,7 @@ For interval $[a, b]$,
 otherwise $P(X = x) = 0$,
 where $n=b-a+1$ is the total number of values $x$ can take.
 
-![Uniform distribution](images/discrete_uniform_pmf_cdf.png)
+![Uniform distribution](images/chapter_11/discrete_uniform_pmf_cdf.png)
 
 
 
@@ -110,7 +110,7 @@ At $n = 1$,
 Binomial distribution is known as
 Bernoulli distribution.
 
-![Binomial distribution](images/binomial_pmf_cdf.png)
+![Binomial distribution](images/chapter_11/binomial_pmf_cdf.png)
 
 
 
@@ -142,7 +142,7 @@ $$
 \text{Pois}(\mu=np) \approx \text{Bin}(n, p)
 $$
 
-![Poisson distribution](images/poisson_pmf_cdf.png)
+![Poisson distribution](images/chapter_11/poisson_pmf_cdf.png)
 
 
 
@@ -159,7 +159,7 @@ $$
       but the probability af any $x$ is exactly 0
 - The CDF for continuous distributions is often smooth.
 
-![CMF PDF PMF](images/cmf_pdf_pmf.png)
+![CMF PDF PMF](images/chapter_11/cmf_pdf_pmf.png)
 
 
 
@@ -174,7 +174,7 @@ $$
 Most common Uniform distribution is $\mathcal{U}(0, 1)$—the
 standard Uniform.
 
-![Continuous uniform distibution](images/uniform_pdf_cdf.png)
+![Continuous uniform distibution](images/chapter_11/uniform_pdf_cdf.png)
 
 
 ### Gaussian or normal distribution
@@ -186,7 +186,7 @@ $$
 
 Standard Gaussian is $\mu=0$ and $\sigma=1$
 
-![Normal distribution](images/normal_pdf_cdf.png)
+![Normal distribution](images/chapter_11/normal_pdf_cdf.png)
 
 
 ### Student's t-distribution
@@ -214,7 +214,7 @@ You can calculate it,
 but the spread is high
 and will not decrease as the sample size increases.
 
-![Student's t-distribution](images/student_t_pdf_cdf.png)
+![Student's t-distribution](images/chapter_11/student_t_pdf_cdf.png)
 
 
 
@@ -237,7 +237,7 @@ $\alpha = \mu \kappa$, $\beta = (1 - \mu) \kappa$
 where $\mu$ the mean and $\kappa$ a parameter called concentration.
 As $\kappa$ increases the dispersion decreases.
 
-![Beta distribution](images/beta_pdf_cdf.png)
+![Beta distribution](images/chapter_11/beta_pdf_cdf.png)
 
 
 
