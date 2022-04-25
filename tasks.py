@@ -20,14 +20,14 @@ def screenshot(context, chapter, name=None):
         raise ValueError("Multiple screenshots found")
 
     screenshot_path, *_ = screenshots
-    project_path = pathlib.Path(__file__).parent / pathlib.Path("notebooks", chapter)
+    project_path = pathlib.Path(__file__).parent / pathlib.Path("notebooks")
     new_file_name = (
         pathlib.Path(screenshot_path.name)
         if name is None
         else pathlib.Path(name).with_suffix(".png")
     )
-    image_dir_name = "images"
-    (project_path / image_dir_name).mkdir(exist_ok=True)
+    image_dir_name = pathlib.Path("images", f"chapter_{chapter}")
+    (project_path / image_dir_name ).mkdir(parents=True, exist_ok=True)
     relative_new_path = image_dir_name / new_file_name
     absolute_new_path = project_path / relative_new_path
     context.run(f"mv {screenshot_path} {absolute_new_path}")
