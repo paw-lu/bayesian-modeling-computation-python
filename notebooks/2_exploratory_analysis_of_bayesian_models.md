@@ -25,6 +25,7 @@ jupyter:
 import arviz as az
 import matplotlib.pyplot as plt
 import numpy as np
+import pymc3 as pm
 from scipy import stats
 ```
 
@@ -210,3 +211,115 @@ Ideally we want MCSE to be small across all regions of the parameter space.
 ```python
 az.summary(chains, kind="diagnostics")
 ```
+
+### Trace plots
+
+
+**Trace plots** are often the first plot you make after inference.
+Draws the sampled values at each iteration step.
+Check if different chains
+converge to the same distributuion.
+Check autocorrelation.
+
+```python
+az.plot_trace(chains)
+plt.tight_layout();
+```
+
+Left column:
+one KDE per chain.
+Right column:
+sampled values per chain per step.
+
+Good chains have only small differences between distributions,
+and ordered values should have no pattern,
+and be difficult to distinguish chains from each other.
+Random peaks that are inconsistent from trace to trace—like
+`bad_chains1`—are
+suspicious.
+
+
+### Autocorrelation plots
+
+
+Autocorrelation decreases the actual amount of information in a sample.
+
+```python
+az.plot_autocorr(chains, combined=True);
+```
+
+### Rank plots
+
+
+
+
+
+**Rank plots**
+are histograms of the ranked samples.
+Ranks are computed for all chains,
+but plots are per chain.
+If all chains are targeting the same distribution,
+we expect a Uniform distribution.
+
+```python
+az.plot_rank(chains, kind="bars");
+```
+
+Can also plot vertical lines.
+Vertical lines above the dashed line
+indicate an exces sample value.
+Below the line is a lack of sampled values.
+The shorter the line,
+the better.
+
+```python
+az.plot_rank(chains, kind="vlines");
+```
+
+Rank plots are more sensitive thatn trace plots.
+`az.plot_trace(..., kind="rank_bars")` or `az.plot_trace(..., kind="rank_vlines")`.
+
+
+### Divergences
+
+
+Besides studying the generated samples,
+can also monitor the innner workings
+of the sampling method.
+
+
+
+```python
+with pm.Model() as model_0:
+    θ1 = pm.Normal("θ1", 0, 1, testval=0.1)
+    θ2 = pm.Uniform("θ2", -θ1, θ1)
+    idata_0 = pm.sample(return_inferencedata=True)
+
+with pm.Model() as model_1:
+    θ1 = pm.HalfNormal("θ1", 1 / (1 - 2 / np.pi) ** 0.5)
+    θ2 = pm.Uniform("θ2", -θ1, θ1)
+    idata_1 = pm.sample(return_inferencedata=True)
+
+with pm.Model() as model_1bis:
+    θ1 = pm.HalfNormal("θ1", 1 / (1 - 2 / np.pi) ** 0.5)
+    θ2 = pm.Uniform("θ2", -θ1, θ1)
+    idata_1bis = pm.sample(target_accept=0.95, return_inferencedata=True)
+```
+
+```python
+for i, idata in enumerate([idata_0, idata_1, idata_1bis]):
+    az.plot_trace(idata, kind="rank_vlines")
+    az.plot_pair(idata, divergences=True)
+plt.tight_layout();
+```
+
+Each of the vertical bars represents a divergence in the trace plots,
+and in the pair plots they are the teal points.
+
+`model_0` has $\theta1$ as a Normal centered at 0,
+which is negative half the time.
+`model_1` tries to reparamaterize.
+`model_1bis` increases `target_accept`
+and looks good,
+but need to check ESS and $\hat R$
+to be sure.
