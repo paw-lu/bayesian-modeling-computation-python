@@ -323,3 +323,204 @@ which is negative half the time.
 and looks good,
 but need to check ESS and $\hat R$
 to be sure.
+
+
+### Sampler parameters and other diagnostics
+
+Solutions:
+
+- Increase `target_accept`
+  if divergences originate from numerical imprecision.
+- Increase `tune`—which
+  further adjusts the sampler parameters—can
+  help to increase ESS or lower $\hat R$
+- Increase the number of draws can help with convergence—but
+  is the least productive solution.
+- Reparameterizxation
+- Improve model structue
+- More informative priors
+- Change model
+
+Samples:
+
+- Use 200–300 samples for testing
+- Use 2,000–4,000 when more comfertable
+
+Additional diagnostics:
+
+- Parellel plots
+- Seperation plots
+
+
+## Model comparison
+
+
+Can compare models using generalization error,
+or out-of-sample predictive accuracy—and
+estimate of how well a model behaves at predicting data
+not used to fit it.
+
+One generic metric is the logrithmic scoring rule—the
+**expected log pointwise predictive density (ELPD)**.
+
+$$
+\text{ELPD} = \sum_{i=1}^{n} \int p_t(\tilde y_i) \; \log p(\tilde y_i \mid y_i) \; d\tilde y_i
+$$
+
+where $p_t(\tilde y_i)$ is the distribution of the true data-generating process for $\tilde y_i$
+and $p(\tilde y_i \mid y_i)$ is the posterior predictive distribution.
+
+For real problems we do not know $p_t(\tilde y_i)$,
+so we can use the deviance:
+
+$$
+\sum_{i=1}^{n} \log \int \ p(y_i \mid \boldsymbol{\theta}) \; p(\boldsymbol{\theta} \mid y) d\boldsymbol{\theta}
+$$
+
+To compute this
+we use the same data used to fit the model,
+and on average overestimate the ELPD—which
+leads to overfitting.
+Cross-validation helps alleviate this problem.
+
+
+### Cross-validation and LOO
+
+
+**Cross-validation (CV)**
+is estimateing out-of-sample predictive accuracy.
+You re-fit the model many times,
+each time excluding a different portion of the data.
+The excluded portion is used to measure the accuracy of the model.
+This is repeated many times
+and the results are averaged over the runs.
+
+$$
+\text{ELPD}_\text{LOO-CV} = \sum_{i=1}^{n} \log
+    \int \ p(y_i \mid \boldsymbol{\theta}) \; p(\boldsymbol{\theta} \mid y_{-i}) d\boldsymbol{\theta}
+$$
+
+In practive we don't know $\boldsymbol{\theta}$ 
+and need to compute $n$ posteriors.
+This is expensice,
+and we can approximate $\text{ELPD}_\text{LOO-CV}$
+from a single fit to the data
+by using Pareto smoothed importance sampling leave-one-out cross validation PSIS-LOO-CV—or
+just LOO.
+
+```python
+rng = np.random.default_rng(42)
+y_obs = rng.normal(0, 1, size=100)
+idatas_cmp = {}
+
+# Generate data from Skewnormal likelihood model
+# with fixed mean and skewness and random standard deviation
+with pm.Model() as mA:
+    σ = pm.HalfNormal("σ", 1)
+    y = pm.SkewNormal("y", 0, σ, alpha=1, observed=y_obs)
+    # This pattern is likely to change in PyMC 4.0
+    trace_A = pm.sample(return_inferencedata=False)
+    posterior_predictive_A = pm.sample_posterior_predictive(trace_A)
+    idataA = az.from_pymc3(
+        trace=trace_A,
+        posterior_predictive=posterior_predictive_A,
+    )
+idatas_cmp["mA"] = idataA
+
+# Generate data from Normal likelihood model
+# with fixed mean with random standard deviation
+with pm.Model() as mB:
+    σ = pm.HalfNormal("σ", 1)
+    y = pm.Normal("y", 0, σ, observed=y_obs)
+    trace_B = pm.sample(return_inferencedata=False)
+    posterior_predictive_B = pm.sample_posterior_predictive(trace_B)
+    idataB = az.from_pymc3(
+        trace=trace_B,
+        posterior_predictive=posterior_predictive_B
+    )
+idatas_cmp["mB"] = idataB
+
+# Generate data from Normal likelihood model
+# with random mean and random standard deviation
+with pm.Model() as mC:
+    μ = pm.Normal("μ", 0, 1)
+    σ = pm.HalfNormal("σ", 1)
+    y = pm.Normal("y", μ, σ, observed=y_obs)
+    trace_C = pm.sample(return_inferencedata=False)
+    posterior_predictive_C = pm.sample_posterior_predictive(trace_B)
+    idataC = az.from_pymc3(
+        trace=trace_C,
+        posterior_predictive=posterior_predictive_C,
+    )
+idatas_cmp["mC"] = idataC
+```
+
+```python
+az.loo(idataA)
+```
+
+```python
+compare_df = az.compare(idatas_cmp)
+compare_df
+```
+
+- `rank`
+  Ranks the model from highest predictive accuracy
+- `loo`
+  lists ELPD values
+- `p_loo`
+  list values for the penalization term.
+  This is kinda the estaimted effective number of parameteres,
+  it can be lower than the actual number of parameters
+  when model has more structure—
+  like a hierarchical model—or
+  can be much higher when the model has weak predictive capability
+  and may indicate misspecification for model.
+- `d_loo`
+  list of relative differences
+  between the value of LOO
+  for the top and current model.
+- `weight`
+  is the weight for each model—the
+  probability of each model given the data
+  amoung other compared models
+- `se`
+  The standard error for the ELPD
+- `dse`
+  The standard errors of the differences between two values
+  of the ELPD.
+  `dse` is not necessarity the same as `se`,
+  because the uncertaintly about the ELPD can be correlated between models.
+  dse is always 0 for top rank models.
+- `warning`
+  if LOO may not be reliable.
+- `loo_scale`
+  is the scale of reported values.
+  Default is log scale.
+
+```python
+az.plot_compare(compare_df);
+```
+
+Can plot as well.
+Where open circle is `loo`,
+black dots are predictive accuracy without `p_loo`,
+Black segments are error for LOO (`se`),
+and grey segments are erorrs of the difference `dse`
+between LOO value and best ranked value.
+
+`mA` is worst,
+but `mB` and `mC` are close.
+Rule of thumb—LOO difference below 4 is small.
+Difference is that `mB` the mean is fixed at 0,
+and `mC` it has a prior—which
+results in a penalty.
+This is why `p_loo` is larger for `mC`,
+and black dot on plot
+(unpenalized ELPD)
+and open dot
+($\text{ELPD}_\text{LOO-CV}$)
+is larger as well.
+`dse` is also lower
+than respective `se`—indicating
+correlation.
