@@ -483,7 +483,7 @@ compare_df
 - `weight`
   is the weight for each model—the
   probability of each model given the data
-  amoung other compared models
+  among other compared models
 - `se`
   The standard error for the ELPD
 - `dse`
@@ -524,3 +524,172 @@ is larger as well.
 `dse` is also lower
 than respective `se`—indicating
 correlation.
+
+
+### Expected log predictive density
+
+
+Previouly we looked at LOO for entire model,
+but can also do local comparisons.
+
+```python
+_, axes = plt.subplots(2, 2, figsize=(20, 7), sharey=True)
+az.plot_elpd(idatas_cmp, ax=axes)
+plt.tight_layout();
+```
+
+Positive values are when observations are better resolved by the first model than the second.
+
+
+### Pareto shape parameter
+
+
+LOO approximation involves coputing a Pareto distribution.
+Main purpose is to get a robust estimation,
+but side-effect is that it can be used to detect
+highliy influential observations—
+observatoins that would change the model if left out.
+Higher values of $\hat \kappa$
+can indicate problems with the data of model—especially
+when 0.7 < $\hat \kappa$.
+If this is the case:
+
+- Use matching moment method.
+  Transform MCMC draws from the posterior distirubtion
+  to obtain a more reliable importance sample
+- Perform exact leave-one-out cross validation
+  for problematic observations
+  or use k-fold
+- Use a model that is more robust to anomalies
+
+`az.loo` and `az.compare` will give warning in `warning` column if 0.7 < $\hat \kappa$.
+
+```python
+_, axes = plt.subplots(1, 3, figsize=(20, 4), sharey=True)
+for model, ax in zip(idatas_cmp, axes):
+    loo = az.loo(idatas_cmp[model], pointwise=True)
+    az.plot_khat(
+        loo,
+        ax=ax,
+        threshold=0.09,
+        show_hlines=True,
+        hlines_kwargs={"hlines": 0.09, "ls": "--"},
+    )
+    ax.set_title(model)
+```
+
+In above plot 0.09 is chosen as arbitrary point.
+
+
+### Interpreting `p_loo` when Pareto $\hat \kappa$ is large
+
+
+`p_loo` is kinda like the estimated effective number of parameters.
+For models with large $\hat \kappa$ (> 0.7) we can get some extra information.
+
+- If `p_loo` << $p$,
+  the model is likely misspecified.
+  You usually see problems in the posterior predictive checks
+  not matching with data.
+- If `p_loo` << $p$
+  and $p$ is relatively large compared to the number of observations—like
+  $p > \frac{N}{5}$
+  (where $N$ is total observations).
+  Usually indication that the model is too flexible,
+  or priors too uniformative,
+  so it's difficult to predict the left out observations.
+- If `p_loo` > $p$,
+  then the model is likely to be badly misspecified.
+  If the number of parameters is $p << N$,
+  then the posteior predictive checks might reveal a problem.
+  If $p$ is relatively large copmpared to the nmber of observations—like
+  above—you
+  might not see problems in posterior predictive checks.
+
+If model misspecification,
+try:
+
+- Add more structure
+    - E.g. Nonlinear components
+- Use different likelihood
+    - Overdispered likelihood
+        - E.g. NegativeBinomial instead of Poisson
+    - Mixture likelihood
+
+
+### LOO-PIT
+
+For posterior predictive checks the data is used twice—once
+to fit the model
+and again to check it.
+LOO-PIT (Probability Integral Transform) tries to remedy this.
+Can use LOO as a fast approximation to cross-validation.
+For a well calibrated model,
+we should expect an approximatley Uniform distribution.
+This is similar to [Understanding your predictions](#understanding-your-predictions).
+
+LOO-PIT is obtained by comparing the observed data $y$
+to the posterior predicted data $\tilde y$.
+It's computing the probability that the posterior predicted data $\tilde y_i$
+has lower value than the observed data $y_i$,
+when we remove the $i$ observation.
+
+The difference between `az.plot_bpv(idata, kind="u_value")` and LOO-PIT
+is that with the latter we are approximately avoiding using the data twice
+but the overall interpretation of the plots is the same.
+
+```python
+_, axes = plt.subplots(1, 3, figsize=(12, 4), sharey=True)
+for model, ax in zip(("mA", "mB", "mC"), axes):
+    az.plot_loo_pit(idatas_cmp[model], y="y", legend=False, use_hdi=True, ax=ax)
+    ax.set_title(model)
+```
+
+### Model averaging
+
+
+If we are not sure that our model is the definitive model,
+we can take that uncertainty into account for our analysis.
+One way is to perform a weighted average
+over all considered models—with
+more weight given to models that explain or predict model better.
+
+**Bayesian model averaging** is weighing models by ther marginal likelihoods.
+It's hard in practive,
+so we can use LOO to estimate weights.
+
+$$
+w_i = \frac {e^{-\Delta_i }} {\sum_j^k e^{-\Delta_j }}
+$$
+
+Where—assuming
+we are using the log-scale—$\Delta_i$
+is the difference between the $i$ value of LOO and the highest one.
+Caveat is that this does not take into account the uncertainty in LOO.
+We can compute the standard error assuming a Gaussian
+and modify equation,
+or use Bayesian Bootstrapping.
+
+Another way to avearge models is stacking their predictive distributions.
+You cobine several models to minimize divergence
+between model and true model.
+
+$$
+\max_{n} \frac{1}{n} \sum_{i=1}^{n}log\sum_{j=1}^{k} w_j p(y_i \mid y_{-i}, M_j)
+$$
+
+where $n$ is the number of data points
+and $k$ is the number of models.
+$p(y_i \mid y_{-i}, M_j)$ is the leave-one-out predictive distribution of model $M_j$—but
+it's expensive so we can use LOO.
+
+Even when the models are fittend independently,
+the computation of the weights takes into acccount all models together.
+This is unlike the model averaging—where
+it normalizes weights that are computed independently.
+This is why  `az.compare` data above gives `mB` a weight of 1 and `mC` 0—
+Once `mB` is included in our set of models,
+`mC` doesn't really give us new information.
+
+Weights can be computed from `az.compare(..., method="stacking")
+`pm.sample_posterior_predictive_w(...)` accepts a lit of traces and list of weights.
