@@ -224,3 +224,81 @@ inf_data_model_penguin_mass_all_species2.add_groups(
     observed_data={"mass": body_mass_g},
 )
 ```
+
+## Linear regression
+
+
+$$
+\begin{split}
+    \mu =& \beta_0 + \beta_1 X_1 + \dots + \beta_m X_m \\
+Y \sim& \mathcal{N}(\mu, \sigma)
+\end{split}
+$$
+
+or
+
+$$
+\mu = \mathbf{X}\boldsymbol{\beta}
+$$
+
+ $\mathbf{X}$ is known as the **design matrix**.
+ 
+ ![3D linear regression](images/chapter_3/3d_linear_regression.png)
+
+
+
+### Linear penguins
+
+```python
+adelie_flipper_length_obs = penguins.loc[
+    lambda df: df["species"] == "Adelie", "flipper_length_mm"
+]
+
+with pm.Model() as model_adelie_flipper_regression:
+    adelie_flipper_length = pm.Data(
+        "adelie_flipper_length", value=adelie_flipper_length_obs
+    )
+    σ = pm.HalfStudentT("σ", nu=100, sigma=2_000)
+    β_0 = pm.Normal("β_0", mu=0, sigma=4_000)
+    β_1 = pm.Normal("β_1", mu=0, sigma=4_000)
+    μ = pm.Deterministic("μ", var=β_0 + β_1 * adelie_flipper_length)
+
+    mass = pm.Normal("mass", mu=μ, sigma=σ, observed=adelie_mass_obs)
+
+    inf_data_adelie_flipper_regression = pm.sample(return_inferencedata=True)
+
+az.plot_posterior(inf_data_adelie_flipper_regression, var_names=["β_0", "β_1"]);
+```
+
+```python
+az.plot_forest(
+    [inf_data_adelie_penguin_mass, inf_data_adelie_flipper_regression],
+    model_names=["mass_only", "flipper_regression"],
+    var_names=["σ"],
+    combined=True,
+);
+```
+
+Incorperating covariate resulted in better predictions
+See reduction of $\sigma$.
+
+```python
+inf_data_adelie_flipper_regression["posterior"].mean()["β_0"].values.item()
+```
+
+```python
+_, ax = plt.subplots(figsize=(20, 7))
+alpha_m = inf_data_adelie_flipper_regression["posterior"].mean()["β_0"].values.item()
+beta_m = inf_data_adelie_flipper_regression["posterior"].mean()["β_1"].values.item()
+flipper_length = np.linspace(
+    adelie_flipper_length_obs.min(), adelie_flipper_length_obs.max(), 100
+)
+mass_mean = alpha_m + beta_m * flipper_length
+ax.plot(flipper_length, mass_mean, color="C2")
+ax.scatter(x=adelie_flipper_length_obs, y=adelie_mass_obs)
+az.plot_hdi(
+    x=adelie_flipper_length_obs,
+    y=inf_data_adelie_flipper_regression["posterior"]["μ"],
+    ax=ax,
+);
+```
