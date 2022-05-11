@@ -302,3 +302,81 @@ az.plot_hdi(
     ax=ax,
 );
 ```
+
+### Predictions
+
+```python
+with model_adelie_flipper_regression:
+    # Predict mass for panguin with average flipper length
+    pm.set_data({"adelie_flipper_length": [adelie_flipper_length_obs.mean()]})
+    posterior_predictions = pm.sample_posterior_predictive(
+        inf_data_adelie_flipper_regression["posterior"], var_names=["mass", "μ"]
+    )
+_, ax = plt.subplots(figsize=(20, 7))
+az.plot_dist(
+    posterior_predictions["mass"],
+    label="Posterior Predictive of \nIndividual Penguin Mass",
+)
+az.plot_dist(
+    posterior_predictions["μ"],
+    label="Posterior Predictive of μ",
+    color="C1"
+)
+ax.legend(loc=1)
+```
+
+### Centering
+
+
+Above,
+$\beta_0$ is mostly negative,
+and its interpretation is not very useful.
+Can center data
+by subtrating the mean from it.
+This does not affect $\beta_1$,
+but now $\beta_0$ is the distribution of the mean masses for penguins with mean flipper length.
+Can also subtract the minimum flipper length—which
+woudl result in $\beta_0$ being the mass distribution for the smallest oberved flipper length.
+
+```python
+adelie_flipper_length_c = adelie_flipper_length_obs - adelie_flipper_length_obs.mean()
+
+
+def gen_adelie_flipper_model(adelie_flipper_length):
+    adelie_flipper_length = tf.constant(adelie_flipper_length, tf.float32)
+
+    @tfd.JointDistributionCoroutine
+    def jd_adelie_flipper_regression():
+        σ = yield root(tfd.HalfStudentT(df=100, loc=0, scale=2_000, name="sigma"))
+        β_1 = yield root(tfd.Normal(loc=0, scale=4_000, name="beta_1"))
+        β_0 = yield root(tfd.Normal(loc=0, scale=4_000, name="beta_0"))
+        μ = β_0[..., None] + β_1[..., None] * adelie_flipper_length
+        mass = yield tfd.Independent(
+            tfd.Normal(loc=μ, scale=σ[..., None]),
+            reinterpreted_batch_ndims=1,
+            name="mass",
+        )
+
+    return jd_adelie_flipper_regression
+
+
+jd_adelie_flipper_regression = gen_adelie_flipper_model(adelie_flipper_length_c)
+mcmc_samples, sampler_stats = run_mcmc(
+    1_000,
+    jd_adelie_flipper_regression,
+    n_chains=4,
+    num_adaptation_steps=1_000,
+    mass=tf.constant(adelie_mass_obs, tf.float32),
+)
+
+inf_data_adelie_flipper_length_c = az.from_dict(
+    posterior={
+        key: np.swapaxes(value, 1, 0) for key, value in mcmc_samples._asdict().items()
+    },
+    sample_stats={
+        key: np.swapaxes(sampler_stats[key], 1, 0)
+        for key in ["target_log_prob", "diverging", "accept_ratio", "n_steps"]
+    },
+)
+az.plot_posterior(inf_data_adelie_flipper_length_c, var_names=["beta_0", "beta_1"]);
+```
