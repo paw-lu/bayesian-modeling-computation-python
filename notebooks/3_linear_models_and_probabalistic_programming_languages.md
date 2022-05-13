@@ -23,12 +23,14 @@ jupyter:
 
 ```python tags=[]
 import arviz as az
+import bambi as bmb
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pymc3 as pm
 import tensorflow as tf
 import tensorflow_probability as tfp
+from pandas import DataFrame
 from tensorflow_probability import distributions as tfd
 ```
 
@@ -51,9 +53,7 @@ $$
 $$
 
 ```python
-adelie_mass_obs = penguins.loc[
-    lambda df: df["species"] == "Adelie", "body_mass_g"
-].to_numpy()
+adelie_mass_obs = penguins.loc[adelie_mask, "body_mass_g"].to_numpy()
 
 with pm.Model() as model_adelie_penguin_mass:
     σ = pm.HalfStudentT("σ", 100, 2_000)
@@ -250,8 +250,13 @@ $$
 ### Linear penguins
 
 ```python
+def adelie_mask(penguins_df: DataFrame) -> DataFrame:
+    """Create mask to select only Adelie penguins."""
+    adelie_penguins_mask = penguins_df["species"] == "Adelie"
+    return adelie_penguins_mask
+
 adelie_flipper_length_obs = penguins.loc[
-    lambda df: df["species"] == "Adelie", "flipper_length_mm"
+    adelie_mask, "flipper_length_mm"
 ]
 
 with pm.Model() as model_adelie_flipper_regression:
@@ -379,4 +384,61 @@ inf_data_adelie_flipper_length_c = az.from_dict(
     },
 )
 az.plot_posterior(inf_data_adelie_flipper_length_c, var_names=["beta_0", "beta_1"]);
+```
+
+## Multiple linear regression
+
+```python
+sex_obs = penguins.loc[adelie_mask, "sex"].replace(
+    {"male": 0, "female": 1}
+)
+
+with pm.Model() as model_penguin_mass_categorical:
+    σ = pm.HalfStudentT("σ", nu=100, sigma=2_000)
+    β_0 = pm.Normal("β_0", mu=0, sigma=3_000)
+    β_1 = pm.Normal("β_1", mu=0, sigma=3_000)
+    β_2 = pm.Normal("β_2", mu=0, sigma=3_000)
+
+    μ = pm.Deterministic("μ", var=β_0 + β_1 * adelie_flipper_length_obs + β_2 * sex_obs)
+    mass = pm.Normal("mass", mu=μ, sigma=σ, observed=adelie_mass_obs)
+
+    inf_data_penguin_mass_categorical = pm.sample(
+        target_accept=0.9, return_inferencedata=True
+    )
+
+az.plot_posterior(inf_data_penguin_mass_categorical, var_names=["β_0", "β_1", "β_2"]);
+```
+
+Bambi version of model.
+Priors are automatically assigned.
+
+```python
+bambi_model = bmb.Model(
+    "body_mass_g ~ flipper_length_mm + sex", penguins.loc[adelie_mask]
+)
+bambi_trace = bambi_model.fit()
+az.plot_posterior(bambi_trace, var_names=["Intercept", "flipper_length_mm", "sex"]);
+```
+
+Since male is encoded as 0.
+$\beta_2$ estiamtes the difference in mass compared to a female
+with the same flipper length.
+
+```python
+inf_data_adelie_flipper_regression
+```
+
+Standard deviation shows reduced variance.
+
+```python
+az.plot_forest(
+    [
+        inf_data_adelie_penguin_mass,
+        inf_data_adelie_flipper_regression,
+        inf_data_penguin_mass_categorical,
+    ],
+    model_names=["mass_only", "flipper_regression", "flipper_sex_regression"],
+    var_names=["σ"],
+    combined=True,
+);
 ```
