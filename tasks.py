@@ -27,8 +27,9 @@ def screenshot(context, chapter, name=None):
         else pathlib.Path(name).with_suffix(".png")
     )
     image_dir_name = pathlib.Path("images", f"chapter_{chapter}")
-    (project_path / image_dir_name ).mkdir(parents=True, exist_ok=True)
+    (project_path / image_dir_name).mkdir(parents=True, exist_ok=True)
     relative_new_path = image_dir_name / new_file_name
     absolute_new_path = project_path / relative_new_path
     context.run(f"mv {screenshot_path} {absolute_new_path}")
-    context.run(f"echo '![]({relative_new_path})' | pbcopy")
+    alt_text = relative_new_path.stem.replace("_", " ")
+    context.run(f"echo '![{alt_text}]({relative_new_path})' | pbcopy")
