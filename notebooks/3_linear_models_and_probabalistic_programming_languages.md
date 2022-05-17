@@ -31,6 +31,7 @@ import pymc3 as pm
 import tensorflow as tf
 import tensorflow_probability as tfp
 from pandas import DataFrame
+from scipy import special
 from tensorflow_probability import distributions as tfd
 ```
 
@@ -441,4 +442,312 @@ az.plot_forest(
     var_names=["σ"],
     combined=True,
 );
+```
+
+### Counterfactuals
+
+
+We can hold all covariats constant except one
+to see how chaniging one covariate changes our expected outcome.
+This is a **counterfactual analysys**.
+
+Caveats:
+
+- You can set values that are impossible
+- You make the assumption that you can vary covariates independently—ie
+  they are not coorelated with each other.
+
+```python
+def gen_jd_flipper_bill_sex(flipper_length, sex, bill_length, dtype=tf.float32):
+    flipper_length, sex, bill_length = tf.nest.map_structure(
+        lambda x: tf.constant(x, dtype), (flipper_length, sex, bill_length)
+    )
+
+    @tfd.JointDistributionCoroutine
+    def jd_flipper_bill_sex():
+        σ = yield root(tfd.HalfStudentT(df=100, loc=0, scale=2000, name="sigma"))
+        β_0 = yield root(tfd.Normal(loc=0, scale=3000, name="beta_0"))
+        β_1 = yield root(tfd.Normal(loc=0, scale=3000, name="beta_1"))
+        β_2 = yield root(tfd.Normal(loc=0, scale=3000, name="beta_2"))
+        β_3 = yield root(tfd.Normal(loc=0, scale=3000, name="beta_3"))
+        μ = (
+            β_0[..., None]
+            + β_1[..., None] * flipper_length
+            + β_2[..., None] * sex
+            + β_3[..., None] * bill_length
+        )
+        mass = yield tfd.Independent(
+            tfd.Normal(loc=μ, scale=σ[..., None]),
+            reinterpreted_batch_ndims=1,
+            name="mass",
+        )
+
+    return jd_flipper_bill_sex
+
+
+bill_length_obs = penguins.loc[adelie_mask, "bill_length_mm"]
+jd_flipper_bill_sex = gen_jd_flipper_bill_sex(
+    adelie_flipper_length_obs, sex_obs, bill_length_obs
+)
+
+mcmc_samples, sampler_stats = run_mcmc(
+    1000,
+    jd_flipper_bill_sex,
+    n_chains=4,
+    num_adaptation_steps=1000,
+    mass=tf.constant(adelie_mass_obs, tf.float32),
+)
+
+mean_flipper_length = penguins.loc[adelie_mask, "flipper_length_mm"].mean()
+# Counterfactual dimensions is set to 21 to allow us to get the mean exactly
+counterfactual_flipper_lengths = np.linspace(
+    mean_flipper_length - 20, mean_flipper_length + 20, 21
+)
+sex_male_indicator = np.zeros_like(counterfactual_flipper_lengths)
+mean_bill_length = np.ones_like(counterfactual_flipper_lengths) * bill_length_obs.mean()
+
+jd_flipper_bill_sex_counterfactual = gen_jd_flipper_bill_sex(
+    counterfactual_flipper_lengths, sex_male_indicator, mean_bill_length
+)
+ppc_samples = jd_flipper_bill_sex_counterfactual.sample(value=mcmc_samples)
+estimated_mass = ppc_samples[-1].numpy().reshape(-1, 21)
+
+_, ax = plt.subplots(figsize=(20, 7))
+az.plot_hdi(counterfactual_flipper_lengths, estimated_mass, ax=ax)
+ax.plot(counterfactual_flipper_lengths, estimated_mass.mean(axis=0), lw=4)
+ax.set_xlabel("Counterfactual flipper length")
+ax.set_ylabel("Mass")
+```
+
+## Generalized linear models
+
+
+We may want to use non-normal distributions.
+Use **inverse link function** $\phi$:
+
+$$
+\mu = \phi(\mathbf{X} \beta) 
+$$
+$$
+Y \sim \Psi (\mu, \theta)
+$$
+
+Traditionally **link functions** are applied to left hand side of equation.
+
+
+### Logistic regression
+
+
+Used when there are only two possible outcomes,
+maps $(-\infty, \infty)$ to $(0,1)$
+and uses $logstic$ function as inverse link function.
+$logit$ is the link function.
+
+$$
+p = \frac{1}{1+e^{-\mathbf{X}\beta}}
+$$
+
+![Logistic](images/chapter_3/Logistic.png)
+
+
+
+### Classifying penguins
+
+
+Given mass, sex, and bill length
+can you predict species?
+
+If we set decision boundary to 0.5
+
+$$
+\begin{split}
+0.5 &= logistic(\beta_{0} + \beta_{1}*x) \\
+logit(0.5) &= \beta_{0} + \beta_{1}*x \\
+0 &= \beta_{0} + \beta_{1}*x \\
+x &= -\frac{\beta_{0}}{\beta_{1}} \\
+\end{split}
+$$
+
+```python
+def species_filter(penguins_df: DataFrame) -> DataFrame:
+    """Select only Adelie and Chinstrap species."""
+    species_filter = penguins_df["species"].isin({"Adelie", "Chinstrap"})
+    return species_filter
+
+
+bill_length_obs = penguins.loc[species_filter, "bill_length_mm"].to_numpy()
+species = pd.Categorical(penguins.loc[species_filter, "species"])
+
+with pm.Model() as model_logistic_penguins_bill_length:
+    β_0 = pm.Normal("β_0", mu=0, sigma=10)
+    β_1 = pm.Normal("β_1", mu=0, sigma=10)
+
+    μ = β_0 + pm.math.dot(bill_length_obs, β_1)
+
+    # Sigmoid inverse link
+    θ = pm.Deterministic("θ", pm.math.sigmoid(μ))
+    # Decision boundary where regression = 0
+    bd = pm.Deterministic("bd", -β_0 / β_1)
+    yl = pm.Bernoulli("yl", p=θ, observed=species.codes)  # Not gaussian
+
+    prior_predictive_logistic_penguins_bill_length = pm.sample_prior_predictive(
+        samples=10000
+    )
+    trace_logistic_penguins_bill_length = pm.sample(5000, random_seed=0, chains=2)
+    posterior_predictive_logistic_penguins_bill_length = pm.sample_posterior_predictive(
+        trace_logistic_penguins_bill_length
+    )
+    inf_data_logistic_penguins_bill_length = az.from_pymc3(
+        prior=prior_predictive_logistic_penguins_bill_length,
+        trace=trace_logistic_penguins_bill_length,
+        posterior_predictive=posterior_predictive_logistic_penguins_bill_length,
+    )
+
+az.plot_dist(prior_predictive_logistic_penguins_bill_length["yl"])
+```
+
+![Logistic_bill_length](images/chapter_3/Logistic_bill_length.png)
+
+
+```python
+az.summary(
+    inf_data_logistic_penguins_bill_length,
+    var_names=["β_0", "β_1"],
+    kind="stats",
+)
+```
+
+```python
+mass_obs = penguins.loc[species_filter, "body_mass_g"].to_numpy()
+
+with pm.Model() as model_logistic_penguins_mass:
+    β_0 = pm.Normal("β_0", mu=0, sigma=10)
+    β_1 = pm.Normal("β_1", mu=0, sigma=10)
+
+    μ = β_0 + pm.math.dot(mass_obs, β_1)
+    θ = pm.Deterministic("θ", pm.math.sigmoid(μ))
+    bd = pm.Deterministic("bd", -β_0 / β_1)
+
+    yl = pm.Bernoulli("yl", p=θ, observed=species.codes)
+
+    trace_logistic_penguins_mass = pm.sample(
+        5000, random_seed=0, chains=2, target_accept=0.9
+    )
+    posterior_predictive_logistic_penguins_mass = pm.sample_posterior_predictive(
+        trace_logistic_penguins_mass
+    )
+    inf_data_logistic_penguins_mass = az.from_pymc3(
+        trace=trace_logistic_penguins_mass,
+        posterior_predictive=posterior_predictive_logistic_penguins_mass,
+    )
+
+az.summary(inf_data_logistic_penguins_mass, var_names=["β_0", "β_1"], kind="stats")
+```
+
+$\beta_1$ is 0
+since there is not enough info
+to separate the two classes.
+
+![Logistic mass](images/chapter_3/Logistic_mass.png)
+
+```python
+X = penguins.loc[species_filter, ["bill_length_mm", "body_mass_g"]]
+
+# Add a column of 1s for the intercept
+X.insert(0, "Intercept", value=1)
+X = X.values
+
+with pm.Model() as model_logistic_penguins_bill_length_mass:
+    β = pm.Normal("β", mu=0, sigma=20, shape=3)
+
+    μ = pm.math.dot(X, β)
+
+    θ = pm.Deterministic("θ", pm.math.sigmoid(μ))
+    bd = pm.Deterministic("bd", -β[0] / β[2] - β[1] / β[2] * X[:, 1])
+
+    yl = pm.Bernoulli("yl", p=θ, observed=species.codes)
+
+    trace_logistic_penguins_bill_length_mass = pm.sample(
+        5_000, random_seed=0, chains=2, target_accept=0.9
+    )
+    posterior_predictive_logistic_penguins_bill_length_mass = (
+        pm.sample_posterior_predictive(trace_logistic_penguins_bill_length_mass)
+    )
+    inf_data_logistic_penguins_bill_length_mass = az.from_pymc3(
+        trace=trace_logistic_penguins_bill_length_mass,
+        posterior_predictive=posterior_predictive_logistic_penguins_bill_length_mass,
+    )
+```
+
+![Decision Boundary Logistic mass bill length](images/chapter_3/Decision_Boundary_Logistic_mass_bill_length.png)
+
+```python
+models = {
+    "bill": inf_data_logistic_penguins_bill_length,
+    "mass": inf_data_logistic_penguins_mass,
+    "mass bill": inf_data_logistic_penguins_bill_length_mass,
+}
+
+_, axes = plt.subplots(3, 1, figsize=(12, 4), sharey=True)
+for (label, model), ax in zip(models.items(), axes):
+    az.plot_separation(model, "yl", ax=ax, color="C4")
+    ax.set_title(label)
+plt.tight_layout();
+```
+
+```python
+az.compare(
+    {
+        "mass": inf_data_logistic_penguins_mass,
+        "bill": inf_data_logistic_penguins_bill_length,
+        "mass_bill": inf_data_logistic_penguins_bill_length_mass,
+    }
+)
+```
+
+### Interpreting log odds
+
+
+In a logisitic regressoin
+the slope is the increase in log odds units
+when $x$ is incremented by one unit.
+Odds are the ratio between the probability of occurrence
+and probability of no occurence.
+
+```python
+counts = penguins["species"].value_counts()
+adelie_count = counts["Adelie"]
+chinstrap_count = counts["Chinstrap"]
+adelie_count / (adelie_count + chinstrap_count)  # Adelie probability
+```
+
+```python
+adelie_count / chinstrap_count  # Adelie odds
+```
+
+Odds make interpreting the ratio of one event occurring from another
+more straightforward.
+For example above
+we expect to get 2.14 more times the number of Adelie
+than Chinstrap penguins.
+
+The logit
+is the natural log of the odds.
+$$
+\log \left(\frac{p}{1-p} \right) = \boldsymbol{X} \beta
+$$
+
+```python
+x = 45
+β_0 = inf_data_logistic_penguins_bill_length.posterior["β_0"].mean().values
+β_1 = inf_data_logistic_penguins_bill_length.posterior["β_1"].mean().values
+bill_length = 45
+
+val_1 = β_0 + β_1 * bill_length
+val_2 = β_0 + β_1 * (bill_length + 1)
+
+(
+    f"{special.expit(val_2) - special.expit(val_1):.0%} increase in"
+    " class probability when bill length goes from 45 to 56"
+)
 ```
