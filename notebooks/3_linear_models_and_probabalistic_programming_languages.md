@@ -751,3 +751,84 @@ val_2 = β_0 + β_1 * (bill_length + 1)
     " class probability when bill length goes from 45 to 56"
 )
 ```
+
+## Picking priors in regression models
+
+```python
+x = np.arange(-2, 3, 1)
+y = np.asarray([50, 44, 50, 47, 56])
+_, ax = plt.subplots()
+ax.scatter(x, y)
+ax.set_ylabel("% of girl babies")
+ax.set_xlabel("Attractiveness of parent");
+```
+
+```python
+with pm.Model() as model_uninformative_prior_sex_ratio:
+    σ = pm.Exponential("σ", 0.5)
+    β_1 = pm.Normal("β_1", 0, 20)
+    β_0 = pm.Normal("β_0", 50, 20)
+    μ = pm.Deterministic("μ", β_0 + β_1 * x)
+
+    ratio = pm.Normal("ratio", mu=μ, sigma=σ, observed=y)
+
+    prior_predictive_uninformative_prior_sex_ratio = pm.sample_prior_predictive(
+        samples=10000
+    )
+    trace_uninformative_prior_sex_ratio = pm.sample()
+    inf_data_uninformative_prior_sex_ratio = az.from_pymc3(
+        trace=trace_uninformative_prior_sex_ratio,
+        prior=prior_predictive_uninformative_prior_sex_ratio,
+    )
+```
+
+```python
+inf_data_uninformative_prior_sex_ratio.add_groups({"constant_data": {"x1": x}})
+inf_data_uninformative_prior_sex_ratio["constant_data"]["x"] = x
+inf_data_uninformative_prior_sex_ratio["posterior"]["y_model"] = (
+    inf_data_uninformative_prior_sex_ratio["posterior"]["β_0"]
+    + inf_data_uninformative_prior_sex_ratio["posterior"]["β_1"]
+    * inf_data_uninformative_prior_sex_ratio["constant_data"]["x"]
+)
+az.plot_lm(
+    idata=inf_data_uninformative_prior_sex_ratio,
+    y="ratio",
+    x="x",
+    y_model="y_model",
+);
+```
+
+```python
+with pm.Model() as model_informative_prior_sex_ratio:
+    σ = pm.Exponential("σ", 0.5)
+
+    # Note the now more informative priors
+    β_1 = pm.Normal("β_1", 0, 0.5)  # We expect attractiveness to not matter
+    β_0 = pm.Normal("β_0", 48.5, 0.5)  # We expect around 50% male/female ratio
+
+    μ = pm.Deterministic("μ", β_0 + β_1 * x)
+    ratio = pm.Normal("ratio", mu=μ, sigma=σ, observed=y)
+
+    prior_predictive_informative_prior_sex_ratio = pm.sample_prior_predictive(
+        samples=10000
+    )
+    trace_informative_prior_sex_ratio = pm.sample()
+    inf_data_informative_prior_sex_ratio = az.from_pymc3(
+        trace=trace_informative_prior_sex_ratio,
+        prior=prior_predictive_informative_prior_sex_ratio,
+    )
+
+inf_data_informative_prior_sex_ratio.add_groups({"constant_data": {"x1": x}})
+inf_data_informative_prior_sex_ratio["constant_data"]["x"] = x
+inf_data_informative_prior_sex_ratio["posterior"]["y_model"] = (
+    inf_data_informative_prior_sex_ratio["posterior"]["β_0"]
+    + inf_data_informative_prior_sex_ratio["posterior"]["β_1"]
+    * inf_data_informative_prior_sex_ratio["constant_data"]["x"]
+)
+az.plot_lm(
+    idata=inf_data_informative_prior_sex_ratio,
+    y="ratio",
+    x="x",
+    y_model="y_model",
+);
+```
