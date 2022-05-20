@@ -27,6 +27,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pymc3 as pm
+from pandas import DataFrame
+from scipy import stats
 ```
 
 ## Transforming covariates
@@ -199,3 +201,126 @@ with pm.Model() as model_interaction:
 
 ![Smoker Tip Interaction](images/chapter_4/Smoker_Tip_Interaction.png)
 
+
+
+## Robust regression
+
+
+For outliers,
+can remove them with some criteria—like
+3 standard deviations of 1.5 times the interquartile range—
+or make model that can handle outliers—like
+Student's t-distribution.
+
+Degrees of freedom—$\nu$—for
+Student's t controls the weight of the tails.
+When $\nu$ is small
+there is more distribution in the tails.
+
+```python
+def generate_sales(*, days: int, mean: float, std: float, label: str) -> DataFrame:
+    """Create dataset representing sales."""
+    np.random.seed(0)
+    df = pd.DataFrame(index=range(1, days + 1), columns=["customers", "sales"])
+    for day in range(1, days + 1):
+        num_customers = stats.randint(30, 100).rvs() + 1
+
+        # This is correct as there is an independent draw for each customers orders
+        dollar_sales = stats.norm(mean, std).rvs(num_customers).sum()
+
+        df.loc[day, "customers"] = num_customers
+        df.loc[day, "sales"] = dollar_sales
+
+    # Fix the types as not to cause Theano errors
+    df = df.astype({"customers": "int32", "sales": "float32"})
+
+    # Sorting will make plotting the posterior predictive easier later
+    df["Food_Category"] = label
+    df = df.sort_values("customers")
+    return df
+```
+
+```python
+empanadas = generate_sales(days=200, mean=180, std=30, label="Empanada")
+empanadas.iloc[0] = [50, 92000, "Empanada"]
+empanadas.iloc[1] = [60, 90000, "Empanada"]
+empanadas.iloc[2] = [70, 96000, "Empanada"]
+empanadas.iloc[3] = [80, 91000, "Empanada"]
+empanadas.iloc[4] = [90, 99000, "Empanada"]
+empanadas = empanadas.sort_values("customers")
+
+empanadas.plot.scatter(x="customers", y="sales");
+```
+
+```python
+with pm.Model() as model_non_robust:
+    σ = pm.HalfNormal("σ", 50)
+    β = pm.Normal("β", mu=150, sigma=20)
+
+    μ = pm.Deterministic("μ", β * empanadas["customers"])
+
+    sales = pm.Normal("sales", mu=μ, sigma=σ, observed=empanadas["sales"])
+
+    trace_empanada_sales = pm.sample(random_seed=1, return_inferencedata=False)
+    ppc_empanada_sales = pm.sample_posterior_predictive(trace_empanada_sales)
+    inf_data_non_robust = az.from_pymc3(
+        trace=trace_empanada_sales, posterior_predictive=ppc_empanada_sales
+    )
+
+_, (top_ax, bottom_ax) = plt.subplots(2)
+
+for ax in [top_ax, bottom_ax]:
+    empanadas.plot.scatter(x="customers", y="sales", ax=ax)
+    az.plot_hdi(
+        empanadas["customers"],
+        inf_data_non_robust.posterior_predictive["sales"],
+        hdi_prob=0.95,
+        ax=ax,
+    )
+
+bottom_ax.set_ylim(400, 25000)
+plt.tight_layout();
+```
+
+```python
+az.summary(inf_data_non_robust, kind="stats", var_names=["β", "σ"])
+```
+
+```python
+with pm.Model() as model_robust:
+    σ = pm.HalfNormal("σ", 50)
+    β = pm.Normal("β", mu=150, sigma=20)
+    ν = pm.HalfNormal("ν", 20)
+
+    μ = pm.Deterministic("μ", β * empanadas["customers"])
+
+    sales = pm.StudentT("sales", mu=μ, sigma=σ, nu=ν, observed=empanadas["sales"])
+
+    trace_empanada_sales_robust = pm.sample(random_seed=0, return_inferencedata=False)
+    ppc_empanada_sales_robust = pm.sample_posterior_predictive(
+        trace_empanada_sales_robust
+    )
+
+    inf_data_robust = az.from_pymc3(
+        trace=trace_empanada_sales_robust,
+        posterior_predictive=ppc_empanada_sales_robust,
+    )
+
+_, ax = plt.subplots()
+
+empanadas.plot.scatter(x="customers", y="sales", ax=ax)
+(
+    az.plot_hdi(
+        empanadas["customers"],
+        inf_data_robust.posterior_predictive["sales"],
+        hdi_prob=0.95,
+        ax=ax,
+    ).set(ylim=(4_000, 20_000))
+);
+```
+
+```python
+az.summary(inf_data_robust, var_names=["β", "σ", "ν"], kind="stats")
+```
+
+Big reduction in $\sigma$ in Student-t model
