@@ -499,3 +499,78 @@ az.plot_forest(
     combined=True,
 );
 ```
+
+## Hierarchical models
+
+
+We've had:
+
+- **Unpooled** where there is complete distinction between groups
+- **Pooled** where ther is not distinction between groups
+
+**Partially pooled** or **hierarchical models** refers to the idea
+that groups do not share one fixed parameter,
+but share a hyperparameter which describes the distribution of the parameters of the prior itself.
+
+```python
+with pm.Model(
+    coords={"food_category": food_category.categories}
+) as model_hierarchical_sales:
+    σ_hyperprior = pm.HalfNormal("σ_hyperprior", sigma=20)
+    σ = pm.HalfNormal("σ", sigma=σ_hyperprior, dims="food_category")
+
+    β = pm.Normal("β", mu=10, sigma=20, dims="food_category")
+    μ = pm.Deterministic("μ", β[food_category.codes] * customers)
+
+    sales = pm.Normal(
+        "sales", mu=μ, sigma=σ[food_category.codes], observed=sales_observed
+    )
+
+    trace_hierarchical_sales = pm.sample(target_accept=0.9, return_inferencedata=False)
+    inf_data_hierarchical_sales = az.from_pymc3(
+        trace=trace_hierarchical_sales,
+        coords={
+            "β_dim_0": food_category.categories,
+            "σ_dim_0": food_category.categories,
+        },
+    )
+
+pm.model_to_graphviz(model_hierarchical_sales)
+```
+
+```python
+az.plot_forest(
+    inf_data_hierarchical_sales,
+    var_names=["σ", "σ_hyperprior"],
+    combined=True,
+);
+```
+
+```python
+(
+    az.summary(inf_data_sales_unpooled.posterior["σ"], kind="stats").rename_axis(
+        "Unpooled σ"
+    )
+)
+```
+
+```python
+(
+    az.summary(
+        inf_data_hierarchical_sales, var_names=["σ", "σ_hyperprior"], kind="stats"
+    ).rename_axis("Hierarchical σ")
+)
+```
+
+In unpooled salad $\sigma$ is 21
+while for hierarchical it's ~26.
+It has been pulled up by the pizza $\sigma$.
+Hierarcical $\sigma$ values for both pizza and sandwhich are similar to those of the unpooled.
+
+You can also use hyperpriors for $\beta$,
+and have one hyperprior for each hyperparameter.
+
+Could also do something like a three-level hierarchical model.
+Where top level is company,
+next is geographical market,
+and lowerst is individual location.
