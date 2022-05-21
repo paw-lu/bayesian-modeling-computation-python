@@ -13,6 +13,7 @@ matplotlib = "^3.5.1"
 tensorflow = "^2.8.0"
 tensorflow-probability = "^0.16.0"
 bambi = "^0.7.1"
+graphviz = "^0.20"
 
 [tool.poetry.dev-dependencies]
 ipykernel = "^6.12.1"
