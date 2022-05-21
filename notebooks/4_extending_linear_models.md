@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pymc3 as pm
+import seaborn as sns
 from pandas import DataFrame
 from scipy import stats
 ```
@@ -324,3 +325,177 @@ az.summary(inf_data_robust, var_names=["β", "σ", "ν"], kind="stats")
 ```
 
 Big reduction in $\sigma$ in Student-t model
+
+
+## Pooling, multilevel models, and mixed effects
+
+
+Some dataset contain additional nested structures—resulting
+in some heirarchical data groups.
+
+```python
+pizza_df = generate_sales(days=365, mean=13, std=5, label="Pizza")
+sandwich_df = generate_sales(days=100, mean=6, std=5, label="Sandwich")
+salad_df = generate_sales(days=3, mean=8, std=3, label="Salad")
+sales_df = pd.concat([pizza_df, sandwich_df, salad_df]).reset_index(drop=True)
+
+sales_df.pipe((sns.scatterplot, "data"), x="customers", y="sales", hue="Food_Category");
+```
+
+### Unpooled parameters
+
+```python
+customers = sales_df.loc[:, "customers"].to_numpy()
+sales_observed = sales_df.loc[:, "sales"].to_numpy()
+food_category = pd.Categorical(sales_df["Food_Category"])
+
+with pm.Model(
+    coords={"food_category": food_category.categories}
+) as model_sales_unpooled:
+    σ = pm.HalfNormal("σ", sigma=20, dims="food_category")
+    β = pm.Normal("β", mu=10, sigma=10, dims="food_category")
+    μ = pm.Deterministic("μ", β[food_category.codes] * customers)
+    sales = pm.Normal(
+        "sales", mu=μ, sigma=σ[food_category.codes], observed=sales_observed
+    )
+    trace_sales_unpooled = pm.sample(target_accept=0.9, return_inferencedata=False)
+    inf_data_sales_unpooled = az.from_pymc3(trace=trace_sales_unpooled)
+```
+
+```python
+pm.model_to_graphviz(model_sales_unpooled)
+```
+
+```python
+_, axes = plt.subplots(2)
+for var_name, ax in zip(["β", "σ"], axes):
+    az.plot_forest(
+        [inf_data_sales_unpooled],
+        model_names=["Unpooled"],
+        var_names=[var_name],
+        combined=True,
+        ax=ax,
+    )
+plt.tight_layout();
+```
+
+$\beta$ is widest for salad,
+and $\sigma$ is vary wide for salad.
+Result is identical to creating three seperate models
+with subsets of the data.
+
+
+### Pooled parameters
+
+```python
+with pm.Model() as model_sales_pooled:
+    σ = pm.HalfNormal("σ", sigma=20)
+    β = pm.Normal("β", mu=10, sigma=10)
+
+    μ = pm.Deterministic("μ", var=β * customers)
+
+    sales = pm.Normal("sales", mu=μ, sigma=σ, observed=sales_observed)
+
+    trace_data_sales_pooled = pm.sample(return_inferencedata=False)
+    ppc_sales_pooled = pm.sample_posterior_predictive(trace_data_sales_pooled)
+    inf_data_sales_pooled = az.from_pymc3(
+        trace=trace_data_sales_pooled,
+        posterior_predictive=ppc_sales_pooled,
+    )
+```
+
+```python
+pm.model_to_graphviz(model_sales_pooled)
+```
+
+```python
+az.plot_forest(
+    [inf_data_sales_pooled, inf_data_sales_unpooled],
+    model_names=["Pooled", "Unpooled"],
+    var_names=["σ"],
+    combined=True,
+);
+```
+
+Pooled means more data for each parameter,
+but we don't understand each group individually.
+
+```python
+_, ax = plt.subplots()
+
+for i, hdi_prob in enumerate([0.50, 0.95]):
+    az.plot_hdi(
+        customers,
+        inf_data_sales_pooled["posterior_predictive"]["sales"],
+        hdi_prob=hdi_prob,
+        ax=ax,
+        color=f"C{i + 3}",
+    )
+sales_df.pipe(
+    (sns.scatterplot, "data"),
+    x="customers",
+    y="sales",
+    hue="Food_Category",
+    ax=ax,
+);
+```
+
+### Mixing group and common parameters
+
+
+Can pool only some parameters instead.
+
+```python
+with pm.Model(
+    coords={"food_category": food_category.categories}
+) as model_pooled_sigma_sales:
+    σ = pm.HalfNormal("σ", sigma=20)
+    β = pm.Normal("β", mu=10, sigma=20, dims="food_category")
+
+    μ = pm.Deterministic("μ", var=β[food_category.codes] * customers)
+    sales = pm.Normal("sales", mu=μ, sigma=σ, observed=sales_observed)
+
+    trace_pooled_sigma_sales = pm.sample(return_inferencedata=False)
+    ppc_pooled_sigma_sales = pm.sample_posterior_predictive(trace_pooled_sigma_sales)
+
+    inf_data_pooled_sigma_sales = az.from_pymc3(
+        trace=trace_pooled_sigma_sales,
+        posterior_predictive=ppc_pooled_sigma_sales,
+    )
+```
+
+```python
+pm.model_to_graphviz(model_pooled_sigma_sales)
+```
+
+```python
+_, ax = plt.subplots()
+for idx, food in enumerate(food_category.categories):
+    food_category_mask = sales_df["Food_Category"] == food
+    az.plot_hdi(
+        sales_df["customers"][food_category_mask],
+        inf_data_pooled_sigma_sales["posterior_predictive"]["sales"][
+            :, :, food_category_mask
+        ],
+        hdi_prob=0.5,
+        ax=ax,
+        color=f"C{idx}",
+    )
+
+sales_df.pipe(
+    (sns.scatterplot, "data"),
+    x="customers",
+    y="sales",
+    hue="Food_Category",
+    ax=ax,
+);
+```
+
+```python
+az.plot_forest(
+    [inf_data_sales_unpooled, inf_data_pooled_sigma_sales],
+    model_names=["Unpooled", "Multilevel "],
+    var_names=["σ"],
+    combined=True,
+);
+```
