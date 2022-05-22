@@ -28,8 +28,11 @@ import numpy as np
 import pandas as pd
 import pymc3 as pm
 import seaborn as sns
+import tensorflow as tf
+import tensorflow_probability as tfp
 from pandas import DataFrame
 from scipy import stats
+from tensorflow_probability import distributions as tfd
 ```
 
 ## Transforming covariates
@@ -574,3 +577,246 @@ Could also do something like a three-level hierarchical model.
 Where top level is company,
 next is geographical market,
 and lowerst is individual location.
+
+
+### Posterior geometry matters
+
+
+Some posterior geometries
+are challengeing for samplers—like
+Niel's funnel.
+
+```python
+n_sample = 10_000
+yr = stats.norm.rvs(loc=2.0, scale=3.0, size=n_sample)
+xnr = stats.norm.rvs(loc=0.0, scale=np.exp(yr / 4), size=(1, n_sample))
+
+_, ax = plt.subplots()
+ax.scatter(xnr[0], yr, alpha=0.05);
+```
+
+In complex shapes,
+it's hard to figure out the proper step size.
+Niel's funnel is wide and sparse on top,
+dense and narrow on bottom.
+
+In hierarchical models
+the geometry is largely defined by the correlation of hyperpriors to other parameters—which
+can result in funnel geometry that are difficult to sample.
+
+```python
+def salad_generator(
+    hyperprior_beta_mean=5,
+    hyperprior_beta_sigma=0.2,
+    sigma=50,
+    days_per_location=[6, 4, 15, 10, 3, 5],
+    sigma_per_location=[50, 10, 20, 80, 30, 20],
+) -> DataFrame:
+    """Generate noisy salad data"""
+    beta_hyperprior = stats.norm(hyperprior_beta_mean, hyperprior_beta_sigma)
+
+    # Generate demands days per restaurant
+    df = pd.DataFrame()
+    for i, days in enumerate(days_per_location):
+        np.random.seed(0)
+
+        num_customers = stats.randint(30, 100).rvs(days)
+        sales_location = beta_hyperprior.rvs() * num_customers + stats.norm(
+            0, sigma_per_location[i]
+        ).rvs(num_customers.shape)
+
+        location_df = pd.DataFrame(
+            {"customers": num_customers, "sales": sales_location}
+        )
+        location_df["location"] = i
+        location_df.sort_values(by="customers", ascending=True)
+        df = pd.concat([df, location_df])
+
+    df.reset_index(inplace=True, drop=True)
+    return df
+
+
+hierarchical_salad_df = salad_generator()
+(
+    hierarchical_salad_df.pipe(
+        (sns.relplot, "data"), x="customers", y="sales", col="location", col_wrap=2
+    )
+);
+```
+
+$$
+\begin{split}
+\beta_{\mu h} \sim& \mathcal{N} \\
+\beta_{\sigma h} \sim& \mathcal{HN} \\
+\beta_m \sim& \overbrace{\mathcal{N}(\beta_{\mu h},\beta_{\sigma h})}^{\text{Centered}}  \\
+\sigma_{h} \sim& \mathcal{HN} \\
+\sigma_{m} \sim& \mathcal{HN}(\sigma_{h}) \\
+Y \sim& \mathcal{N}(\beta_{m} * X_m,\sigma_{m})
+\end{split}
+$$
+
+```python
+root = tfd.JointDistributionCoroutine.Root
+run_mcmc = tf.function(
+    tfp.experimental.mcmc.windowed_adaptive_nuts, autograph=False, jit_compile=True
+)
+
+
+def gen_hierarchical_salad_sales(input_df, beta_prior_fn, dtype=tf.float32):
+    customers = tf.constant(input_df["customers"].to_numpy(), dtype=dtype)
+    location_category = input_df["location"].to_numpy()
+    sales = tf.constant(input_df["sales"].to_numpy(), dtype=dtype)
+
+    @tfd.JointDistributionCoroutine
+    def model_hierarchical_salad_sales():
+        β_μ_hyperprior = yield root(tfd.Normal(0, 10, name="beta_mu"))
+        β_σ_hyperprior = yield root(tfd.HalfNormal(0.1, name="beta_sigma"))
+        β = yield from beta_prior_fn(β_μ_hyperprior, β_σ_hyperprior)
+
+        σ_hyperprior = yield root(tfd.HalfNormal(30, name="sigma_prior"))
+        σ = yield tfd.Sample(tfd.HalfNormal(σ_hyperprior), 6, name="sigma")
+
+        loc = tf.gather(β, location_category, axis=-1) * customers
+        scale = tf.gather(σ, location_category, axis=-1)
+        sales = yield tfd.Independent(
+            tfd.Normal(loc, scale), reinterpreted_batch_ndims=1, name="sales"
+        )
+
+    return model_hierarchical_salad_sales, sales
+
+
+def centered_beta_prior_fn(hyper_mu, hyper_sigma):
+    """A centered β prior."""
+    β = yield tfd.Sample(tfd.Normal(hyper_mu, hyper_sigma), 6, name="beta")
+    return β
+
+
+centered_model, observed = gen_hierarchical_salad_sales(
+    hierarchical_salad_df, centered_beta_prior_fn
+)
+mcmc_samples_centered, sampler_stats_centered = run_mcmc(
+    1000,
+    centered_model,
+    n_chains=4,
+    num_adaptation_steps=1000,
+    sales=observed,
+)
+
+divergent_per_chain = np.sum(sampler_stats_centered["diverging"], axis=0)
+divergent_per_chain
+```
+
+```python
+slope = mcmc_samples_centered.beta[..., 4].numpy().flatten()
+sigma = mcmc_samples_centered.beta_sigma.numpy().flatten()
+divergences = sampler_stats_centered["diverging"].numpy().flatten()
+axes = az.plot_pair(
+    {
+        "β[4]": slope,
+        "β_σ_hyperprior": sigma,
+    },
+    marginals=True,
+    scatter_kwargs={"alpha": 0.05},
+)
+axes[1][0].scatter(
+    slope[divergences],
+    sigma[divergences],
+    color="C1",
+    alpha=0.3,
+    label="Divergences",
+)
+axes[1][0].legend();
+```
+
+As $\beta_{\sigma h}$ approaches 0,
+the width of the posterior estimate of $\beta_m$ shrinks
+and the sampler is not able to effectively characterize the posterior space.
+
+This can be alleviated
+by converting into a non-centered parameterization.
+Instead of estimating parameters of the slope $\beta_m$ directly,
+we can model a common term shared between all groups
+and a term for each group
+that caputres the deviation
+from the common term.
+
+$$
+\begin{split}
+\beta_{\mu h} \sim& \mathcal{N} \\
+\beta_{\sigma h} \sim& \mathcal{HN} \\
+\beta_\text{m_offset} \sim& \mathcal{N}(0,1) \\
+\beta_m =& \overbrace{\beta_{\mu h} + \beta_\text{m_offset}*\beta_{\sigma h}}^{\text{Non-centered}}  \\
+\sigma_{h} \sim& \mathcal{HN} \\
+\sigma_{m} \sim& \mathcal{HN}(\sigma_{h}) \\
+Y \sim& \mathcal{N}(\beta_{m} * X_m,\sigma_{m})
+\end{split}
+$$
+
+```python
+def non_centered_beta_prior_fn(hyper_mu, hyper_sigma):
+    """A non-centered prior for β."""
+    β_offset = yield root(tfd.Sample(tfd.Normal(0, 1), 6, name="beta_offset"))
+    return β_offset * hyper_sigma[..., None] + hyper_mu[..., None]
+
+
+non_centered_model, observed = gen_hierarchical_salad_sales(
+    hierarchical_salad_df, non_centered_beta_prior_fn
+)
+mcmc_samples_noncentered, sampler_stats_noncentered = run_mcmc(
+    1_000,
+    non_centered_model,
+    n_chains=4,
+    num_adaptation_steps=1_000,
+    sales=observed,
+)
+
+divergent_per_chain = np.sum(sampler_stats_noncentered["diverging"], axis=0)
+divergent_per_chain
+```
+
+```python
+noncentered_beta = (
+    mcmc_samples_noncentered.beta_mu[..., None]
+    + mcmc_samples_noncentered.beta_offset
+    * mcmc_samples_noncentered.beta_sigma[..., None]
+)
+slope = noncentered_beta[..., 4].numpy().flatten()
+sigma = mcmc_samples_noncentered.beta_sigma.numpy().flatten()
+divergences = sampler_stats_noncentered["diverging"].numpy().flatten()
+axes = az.plot_pair(
+    {
+        "β[4]": slope,
+        "β_σ_hyperprior": sigma,
+    },
+    marginals=True,
+    scatter_kwargs={"alpha": 0.05},
+)
+axes[1][0].scatter(
+    slope[divergences],
+    sigma[divergences],
+    color="C1",
+    alpha=0.3,
+    label="Divergences",
+)
+axes[1][0].legend();
+```
+
+The posterior geometry is now modified
+in a way that allows the sampler to more easily explore all possible values of $\beta_{\sigma h}$.
+
+In general,
+if there are not a lot of observations,
+a non-centered parameterization is preferred.
+
+```python
+_, ax = plt.subplots(figsize=(20, 7))
+centered_β_sigma = mcmc_samples_centered.beta_sigma.numpy()
+noncentered_β_sigma = mcmc_samples_noncentered.beta_sigma.numpy()
+az.plot_kde(centered_β_sigma, label="Centered β_σ_hyperprior", ax=ax)
+az.plot_kde(
+    noncentered_β_sigma,
+    label="Noncentered β_σ_hyperprior",
+    ax=ax,
+    plot_kwargs={"color": "C1"},
+);
+```
