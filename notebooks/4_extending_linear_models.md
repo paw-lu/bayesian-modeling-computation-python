@@ -820,3 +820,88 @@ az.plot_kde(
     plot_kwargs={"color": "C1"},
 );
 ```
+
+### Predictions at multiple levels
+
+
+Can simultaneously make predicitons
+for two different locations
+and the company as a whole.
+
+```python
+out_of_sample_customers = 50.0
+
+
+@tfd.JointDistributionCoroutine
+def out_of_sample_prediction_model():
+    model = yield root(non_centered_model)
+    β = model.beta_offset * model.beta_sigma[..., None] + model.beta_mu[..., None]
+
+    β_group = yield tfd.Normal(
+        model.beta_mu, model.beta_sigma, name="group_beta_prediction"
+    )
+    group_level_prediction = yield tfd.Normal(
+        β_group * out_of_sample_customers,
+        model.sigma_prior,
+        name="group_level_prediction",
+    )
+    for l in [2, 4]:
+        yield tfd.Normal(
+            tf.gather(β, l, axis=-1) * out_of_sample_customers,
+            tf.gather(model.sigma, l, axis=-1),
+            name=f"location_{l}_prediction",
+        )
+
+
+amended_posterior = tf.nest.pack_sequence_as(
+    non_centered_model.sample(), list(mcmc_samples_noncentered) + [observed]
+)
+
+ppc = out_of_sample_prediction_model.sample(var0=amended_posterior)
+
+_, ax = plt.subplots()
+for idx, prediction_group in enumerate(
+    [
+        "group_level_prediction",
+        "location_2_prediction",
+        "location_4_prediction",
+    ]
+):
+    az.plot_kde(
+        getattr(ppc, prediction_group).numpy(),
+        plot_kwargs={"color": f"C{idx}"},
+        ax=ax,
+        label=prediction_group,
+    )
+```
+
+Can also make predictions
+for never before seen groups
+by sampling from hyper priors to get $\beta$ and $\sigma$ of new location.
+
+```python
+out_of_sample_customers2 = np.arange(50, 90)
+
+
+@tfd.JointDistributionCoroutine
+def out_of_sample_prediction_model2():
+    model = yield root(non_centered_model)
+
+    β_new_loc = yield tfd.Normal(model.beta_mu, model.beta_sigma, name="beta_new_loc")
+    σ_new_loc = yield tfd.HalfNormal(model.sigma_prior, name="sigma_new_loc")
+    group_level_prediction = yield tfd.Normal(
+        β_new_loc[..., None] * out_of_sample_customers2,
+        σ_new_loc[..., None],
+        name="new_location_prediction",
+    )
+
+
+ppc = out_of_sample_prediction_model2.sample(var0=amended_posterior)
+```
+
+Can use LOO to assess how well a model is able to predict new observations,
+but not if we want to asses how well an entire group is predicted.
+Can use leave one-group-out cross validation for that.
+This is because we are removing many observations at a time,
+and the importance sampling step for LOO assumes
+the distribtutions with and without the groups or point being similar.
