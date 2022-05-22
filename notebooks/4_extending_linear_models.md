@@ -905,3 +905,11 @@ Can use leave one-group-out cross validation for that.
 This is because we are removing many observations at a time,
 and the importance sampling step for LOO assumes
 the distribtutions with and without the groups or point being similar.
+
+
+### Priors for multilevel models
+
+
+Hypepriors depends both on the number of groups you have
+and the number of observations in each groups.
+We can perform sensitivity studies to inform our prior choice.
