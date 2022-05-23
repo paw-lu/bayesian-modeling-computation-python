@@ -21,7 +21,13 @@ jupyter:
 <!-- #endregion -->
 
 ```python
+from typing import Sequence
+
+import matplotlib.pyplot as plt
+import numpy as np
+import patsy
 import pymc3 as pm
+from patsy.design_info import DesignMatrix
 ```
 
 ## Polynomial regression
@@ -150,3 +156,66 @@ so you can have multiple possible combinations over the splines.
 Cubic is the most commonly use spline.
 They are the lowerst order able to generate smooth enough curves
 for most common scenarios.
+
+
+## Building the design matrix using Patsy
+
+```python
+x = np.linspace(0, 1, 20)
+knots = [0.25, 0.5, 0.75]
+
+
+def make_splines(
+    x: Sequence[float], knots: Sequence[float], degree: int
+) -> DesignMatrix:
+    """Create splines using Patsy."""
+    splines = patsy.dmatrix(
+        f"bs(x, knots=knots, degree={degree}, include_intercept=True) - 1",
+        {"x": x, "knots": knots},
+    )
+
+    return splines
+
+
+b0 = make_splines(x, knots=knots, degree=0)
+b1 = make_splines(x, knots=knots, degree=1)
+b3 = make_splines(x, knots=knots, degree=3)
+
+_, axes = plt.subplots(1, 3, sharey=True, figsize=(20, 7))
+
+for idx, (b, title, ax) in enumerate(
+    zip(
+        (b0, b1, b3),
+        ("Piecewise constant", "Piecewise linear", "Cubic spline"),
+        axes,
+    )
+):
+    ax.imshow(b, cmap="cet_gray_r", aspect="auto")
+    ax.set_xticks(np.arange(b.shape[1]))
+#     ax.set_yticks(np.arange(b.shape[0]))
+    ax.set_title(title)
+
+axes[1].set_xlabel("b-splines")
+axes[0].set_ylabel("x");
+```
+
+```python
+np.asarray(b0)
+```
+
+```python
+np.asarray(b1)
+```
+
+```python
+np.asarray(b3)
+```
+
+For `b0`
+we see the design mattix has only 0s or 1s.
+The first B-spline is 1 for the first 5 observations,
+and 0 otherwise.
+The second B-spline
+is 0 for the first 5 observations
+1 for the second 5,
+and 0 again.
