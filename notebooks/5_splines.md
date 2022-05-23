@@ -95,3 +95,58 @@ $$
 \mathbb{E}[Y]= \phi \left(\sum_i^p f(X_i)\right)
 $$
 
+
+
+## Introducing splines
+
+
+**Splines** are an atttempt to use flexibility of polynomials
+but keep them under control.
+A spline needs knots
+to split the domain of the variable $\boldsymbol{X}$ into contiguous intervals.
+For this purpose a spline is a piecewise polynomial constrained to be continuous—
+we enforce two contiguous sub-polynomials to meet at the knots.
+If sub-polynomials are of degree $n$
+we say the spline is of degree $n$.
+Sometimes the splines are referred to by their order—$n + 1$.
+
+Sub-polynomials are known as **Basis splines (B-splines)**.
+Any spline function of a given degree
+can be constructed as a lineare combination of basis splines of that degree.
+
+![splines basis](images/chapter_5/splines_basis.png)
+
+As we increse the B-spline degree,
+the domain of the B-spline grows.
+For a higher degree spline to make sense
+we need to define more knots.
+B-splines here are restricted to be non-zero only
+instide a given interval.
+
+As the number of knots controlling each B-splines grows with the degree
+we are not able to define a B-spline near the boundaries.
+We can add knots at the boundaries to make up for this.
+So if our knots are $(0,1,2,3,4,5)$
+and we want to fit a cubic spline,
+we actually use $(0,0,0,0,1,2,3,4,5,5,5,5)$.
+We now have the 5 necessary knots—$(0,0,0,0,1)$—to
+define the first B-spline
+and $(0,0,0,1,2)$ to define the second B-spline.
+We pad the boundary knots as many times as the degree of the splint.
+
+![splines weighted](images/chapter_5/splines_weighted.png)
+
+A linear combination of the B-spline
+allows for complex fitting.
+We choose:
+
+1. The order of the B-splines
+2. The number and location of knots
+3. The coefficients to weight each B-spline
+
+The wights are sampled,
+so you can have multiple possible combinations over the splines.
+
+Cubic is the most commonly use spline.
+They are the lowerst order able to generate smooth enough curves
+for most common scenarios.
