@@ -21,10 +21,16 @@ jupyter:
 <!-- #endregion -->
 
 ```python
+%config InlineBackend.figure_format="retina"
+```
+
+```python
 from typing import Sequence
 
+import arviz as az
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import patsy
 import pymc3 as pm
 from patsy.design_info import DesignMatrix
@@ -219,3 +225,75 @@ The second B-spline
 is 0 for the first 5 observations
 1 for the second 5,
 and 0 again.
+
+
+## Fitting splines in  PyMC3
+
+```python
+data = (
+    pd.read_csv(
+        "https://raw.githubusercontent.com"
+        "/BayesianModelingandComputationInPython/BookCode_Edition1/main"
+        "/data/bikes_hour.csv"
+    )
+    .sort_values(by="hour")
+    .assign(
+        count_normalized=lambda df: df["count"]
+        .sub(df["count"].mean())
+        .div(df["count"].std())
+    )[::50]
+)
+_, ax = plt.subplots(figsize=(20, 7))
+data.plot.scatter(x="hour", y="count_normalized", ax=ax);
+```
+
+```python
+num_knots = 6
+knot_list = np.linspace(data["hour"].min(), data["hour"].max(), num_knots + 2)[1:-1]
+knot_list
+```
+
+Above,
+boundaries are removed to ensure knots are defined within the data.
+This depends on situation—such
+as if bulk of data is away from the borders.
+
+```python
+b = patsy.dmatrix(
+    "bs(cnt, knots=knots, degree=3, include_intercept=True) - 1",
+    {"cnt": data["hour"].to_numpy(), "knots": knot_list[1:-1]},
+)
+
+with pm.Model() as splines:
+    τ = pm.HalfCauchy("τ", 1)
+    β = pm.Normal("β", mu=0, sd=τ, shape=b.shape[1])
+    μ = pm.Deterministic("μ", var=pm.math.dot(np.asarray(b), β))
+    σ = pm.HalfNormal("σ", sigma=1)
+    c = pm.Normal("c", mu=μ, sd=σ, observed=data["count_normalized"].values)
+
+    idata_s = pm.sample(1_000, return_inferencedata=True)
+
+_, ax = plt.subplots(figsize=(10, 4))
+posterior = idata_s["posterior"].stack(samples=["chain", "draw"])
+x = data["hour"]
+data_cnt_os = data["count"].std()
+data_cnt_om = data["count"].mean()
+ax.plot(
+    x,
+    b * posterior["β"].mean("samples").to_numpy() * data_cnt_os + data_cnt_om,
+    ls="--",
+)
+ax.plot(x, posterior["μ"].mean("samples") * data_cnt_os + data_cnt_om, lw=5);
+```
+
+```python
+_, ax = plt.subplots(figsize=(10, 4))
+data.plot.scatter(x="hour",y="count", alpha=0.3, ax=ax)
+az.plot_hdi(x, posterior["μ"].T * data_cnt_os + data_cnt_om, ax=ax);
+```
+
+In this data,
+hour 0 is equal to 24.
+With Patsy,
+instead of defining design matrix using `bs`,
+use `cc`—a cubic spline that is circular-aware.
