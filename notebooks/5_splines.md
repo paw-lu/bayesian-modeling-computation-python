@@ -297,3 +297,143 @@ hour 0 is equal to 24.
 With Patsy,
 instead of defining design matrix using `bs`,
 use `cc`—a cubic spline that is circular-aware.
+
+
+## Choosing knots and prior for splines
+
+
+To choose the number and location of knots,
+can use LOO to help pick best model.
+
+```python
+Bs = []
+
+num_knots = (3, 6, 9, 12, 18)
+for nk in num_knots:
+    knot_list = np.linspace(0, 24, nk + 2)[1:-1]
+    B = patsy.dmatrix(
+        "bs(cnt, knots=knots, degree=3, include_intercept=True) - 1",
+        {"cnt": data.hour.values, "knots": knot_list},
+    )
+    Bs.append(B)
+
+idatas = []
+for B in Bs:
+    with pm.Model() as splines:
+        τ = pm.HalfCauchy("τ", 1)
+        β = pm.Normal("β", mu=0, sd=τ, shape=B.shape[1])
+        μ = pm.Deterministic("μ", pm.math.dot(np.asfortranarray(B), β))
+        σ = pm.HalfNormal("σ", 1)
+        c = pm.Normal("c", μ, σ, observed=data["count_normalized"].values)
+        idata = pm.sample(1000, return_inferencedata=True)
+        idatas.append(idata)
+
+az.compare({f"m_{k}k": v for k, v in zip(num_knots, idatas)})
+```
+
+Weight is 0.88 for highest ranked model,
+0.12 for lowest ranked,
+and 0 everywhere else.
+Even when the in between models have better `loo` values,
+they contribute little to `m_12k`—while
+`m_3k` does.
+
+Instead of uniformly,
+knots can be placed based on quantiles.
+
+```python
+num_knots = 6
+knot_list = np.quantile(data["hour"], np.linspace(0, 1, num_knots))
+knot_list
+```
+
+### Regularizing prior for splines
+
+
+Choosing too few knots can lead to underfitting,
+too many overfitting.
+Can choose a large number of knots with a regularizing prior.
+
+The closer the consecutive $\beta$ coefficients are to each other,
+the smoother the function.
+Consecutive coefficients share similar domains—if
+you drop two consecutive ones,
+the sub region loses coverage.
+We can choose a prior for $\beta$ coefficients in such a way
+that $\beta_{i + 1}$ is correlated to $\beta$.
+
+$$
+\begin{aligned}
+\begin{split}
+\beta_i \sim& \mathcal{N}(0, 1) \\
+\tau\sim& \mathcal{N}(0,1) \\
+\beta \sim& \mathcal{N}(\beta_{i-1}, \tau) 
+\end{split}\end{aligned}
+$$
+
+Equivalently,
+we can write
+
+$$
+\begin{aligned}
+\begin{split}
+\tau\sim& \mathcal{N}(0, 1) \\
+\beta \sim& \mathcal{G}RW(\beta, \tau) 
+\end{split}\end{aligned}
+$$
+
+```python
+knot_list = np.arange(1, 23)
+
+B = patsy.dmatrix(
+    "bs(cnt, knots=knots, degree=3, include_intercept=True) - 1",
+    {"cnt": data.hour.values, "knots": knot_list},
+)
+
+# Not smoothed
+with pm.Model() as wiggly:
+    τ = pm.HalfCauchy("τ", 1)
+    β = pm.Normal("β", mu=0, sd=τ, shape=B.shape[1])
+    μ = pm.Deterministic("μ", pm.math.dot(np.asfortranarray(B), β))
+    σ = pm.HalfNormal("σ", 1)
+    c = pm.Normal("c", μ, σ, observed=data["count_normalized"].values)
+    trace_wiggly = pm.sample(1_000, return_inferencedata=False)
+    idata_wiggly = az.from_pymc3(
+        trace=trace_wiggly,
+        posterior_predictive=pm.sample_posterior_predictive(trace_wiggly),
+    )
+
+# Smoothed
+with pm.Model() as splines_rw:
+    τ = pm.HalfCauchy("τ", beta=1)
+    β = pm.GaussianRandomWalk("β", mu=0, sigma=τ, shape=B.shape[1])
+    μ = pm.Deterministic("μ", var=pm.math.dot(np.asarray(B), β))
+    σ = pm.HalfNormal("σ", sigma=1)
+    c = pm.Normal("c", mu=μ, sigma=σ, observed=data["count_normalized"].to_numpy())
+    trace_splines_rw = pm.sample(1_000, return_inferencedata=False)
+    posterior_predictive_splines_rw = pm.sample_posterior_predictive(trace_splines_rw)
+    idata_splines_rw = az.from_pymc3(
+        trace=trace_splines_rw,
+        posterior_predictive=posterior_predictive_splines_rw,
+    )
+
+_, ax = plt.subplots(figsize=(10, 4))
+data.plot.scatter(x="hour", y="count", ax=ax, alpha=0.1)
+ax.plot(
+    data["hour"],
+    ((idata_wiggly.posterior["μ"] * data_cnt_os) + data_cnt_om).mean(
+        dim=["chain", "draw"]
+    ),
+    color="C1",
+    label="Non-regularized",
+)
+ax.plot(
+    data["hour"],
+    ((idata_splines_rw.posterior["μ"] * data_cnt_os) + data_cnt_om).mean(
+        dim=["chain", "draw"]
+    ),
+    color="C2",
+    label="Regularized",
+)
+ax.legend();
+```
