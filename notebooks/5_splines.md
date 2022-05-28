@@ -377,7 +377,7 @@ we can write
 $$
 \begin{aligned}
 \begin{split}
-\tau\sim& \mathcal{N}(0, 1) \\
+\tau\sim& \mathcal{N}(0, 1) \\ff
 \beta \sim& \mathcal{G}RW(\beta, \tau) 
 \end{split}\end{aligned}
 $$
@@ -437,3 +437,164 @@ ax.plot(
 )
 ax.legend();
 ```
+
+## Modeling CO₂ uptake with splines
+
+```python
+plants_CO2 = pd.read_csv(
+    "https://raw.githubusercontent.com"
+    "/BayesianModelingandComputationInPython/BookCode_Edition1/main"
+    "/data/CO2_uptake.csv"
+)
+plant_names = plants_CO2["Plant"].unique()
+CO2_concs = plants_CO2["conc"].to_numpy()
+CO2_conc = CO2_concs[:7]
+uptake = plants_CO2["uptake"].to_numpy()
+plants_CO2.head()
+```
+
+```python
+num_knots = 2
+knot_list = np.linspace(CO2_conc[0], CO2_conc[-1], num_knots + 2)[1:-1]
+Bg = patsy.dmatrix(
+    "bs(conc, knots=knots, degree=3, include_intercept=True) - 1",
+    {"conc": CO2_concs, "knots": knot_list},
+)
+
+with pm.Model(coords={"idx": plants_CO2.index}) as sp_global:
+    τ = pm.HalfCauchy("τ", beta=1)
+    β = pm.Normal("β", mu=0, sigma=τ, shape=Bg.shape[1])
+    μg = pm.Deterministic("μg", pm.math.dot(np.asarray(Bg), β), dims="idx")
+    σ = pm.HalfNormal("σ", sigma=1)
+    up = pm.Normal("up", mu=μg, sigma=σ, observed=uptake, dims="idx")
+    idata_sp_global = pm.sample(2_000, return_inferencedata=True)
+
+_, axes = plt.subplots(4, 3, figsize=(10, 6), sharey=True, sharex=True)
+msg = idata_sp_global["posterior"].stack(draws=["chain", "draw"])["μg"]
+for plant_name, ax in zip(plant_names, axes.ravel()):
+    plant_idx = plants_CO2.loc[lambda df: df["Plant"] == plant_name].index
+    az.plot_hdi(
+        plants_CO2.loc[plant_idx, "conc"],
+        msg.sel(idx=plant_idx).values.T,
+        smooth=False,
+        ax=ax,
+    )
+    plants_CO2.loc[plant_idx].plot.scatter(x="conc", y="uptake", ax=ax)
+    ax.set_title(plant_name)
+plt.tight_layout();
+```
+
+Model is only providing good fit for some plants.
+Try different responce per plant.
+
+```python
+Bi = patsy.dmatrix(
+    "bs(conc, knots=knots, degree=3, include_intercept=True) - 1",
+    {"conc": CO2_conc, "knots": knot_list},
+)
+index = range(12)
+with pm.Model(
+    coords={
+        "CO2_conc": CO2_conc,
+        "knots": range(int(3 * num_knots)),
+        "groups": plants_CO2["Plant"].unique(),
+    }
+) as sp_individual:
+    τ = pm.HalfCauchy("τ", 1)
+    β = pm.Normal("β", mu=0, sigma=τ, dims=("knots", "groups"))
+    μi = pm.Deterministic(
+        "μi", pm.math.dot(np.asarray(Bi), β), dims=("CO2_conc", "groups")
+    )
+    σ = pm.HalfNormal("σ", 1)
+    up = pm.Normal("up", μi.T.ravel(), σ, observed=uptake)
+    idata_sp_individual = pm.sample(2_000, return_inferencedata=True)
+```
+
+```python
+_, axes = plt.subplots(4, 3, figsize=(10, 6), sharey=True, sharex=True)
+msi = idata_sp_individual["posterior"].stack(draws=["chain", "draw"])["μi"]
+for plant_name, ax in zip(plant_names, axes.ravel()):
+    plant_idx = plants_CO2.loc[lambda df: df["Plant"] == plant_name].index
+    az.plot_hdi(
+        plants_CO2.loc[plant_idx, "conc"],
+        msi.sel(groups=plant_name).values.T,
+        smooth=False,
+        ax=ax,
+    )
+    plants_CO2.loc[plant_idx].plot.scatter(x="conc", y="uptake", ax=ax)
+    ax.set_title(plant_name)
+plt.tight_layout();
+```
+
+Can also mix both previous models.
+Can be used to estiamte a global trends
+along with individual fits.
+
+```python
+with pm.Model(
+    coords={
+        "CO2_conc": CO2_conc,
+        "knots": range(int(3 * num_knots)),
+        "groups": plants_CO2["Plant"].unique(),
+        "idx": plants_CO2.index,
+    }
+) as sp_mix:
+    τ = pm.HalfCauchy("τ", beta=1)
+    βg = pm.Normal("βg", mu=0, sigma=τ, shape=Bg.shape[1])
+    μg = pm.Deterministic("μg", pm.math.dot(np.asarray(Bg), βg), dims="idx")
+    βi = pm.Normal("βi", mu=0, sigma=τ, dims=("knots", "groups"))
+    μi = pm.Deterministic(
+        "μi", var=pm.math.dot(np.asarray(Bi), βi), dims=("CO2_conc", "groups")
+    )
+    σ = pm.HalfNormal("σ", 1)
+    up = pm.Normal("up", μg + μi.T.ravel(), σ, observed=uptake)
+    idata_sp_mix = pm.sample(2_000, return_inferencedata=True)
+```
+
+```python
+_, axes = plt.subplots(4, 3, figsize=(10, 6), sharey=True, sharex=True)
+msi = idata_sp_mix["posterior"].stack(draws=["chain", "draw"])["μi"]
+msg = idata_sp_mix["posterior"].stack(draws=["chain", "draw"])["μg"]
+for plant_name, ax in zip(plant_names, axes.ravel()):
+    plant_idx = plants_CO2.loc[lambda df: df["Plant"] == plant_name].index
+    x = plants_CO2.loc[plant_idx, "conc"]
+    group_msi = msi.sel(groups=plant_name).values.T
+    az.plot_hdi(x, group_msi, smooth=False, ax=ax, color="C0")
+    group_msg = msg.sel(idx=plant_idx).values.T
+    az.plot_hdi(x, group_msg, smooth=False, ax=ax, color="C1")
+    az.plot_hdi(
+        x,
+        group_msi + group_msg,
+        smooth=False,
+        ax=ax,
+        color="C2",
+    )
+    plants_CO2.loc[plant_idx].plot.scatter(x="conc", y="uptake", ax=ax)
+    ax.set_title(plant_name)
+plt.tight_layout();
+```
+
+Individual fit (orange)
+can be split into global trend (teal)
+and deviation of the trend (purple).
+
+```python
+cmp = az.compare(
+    {
+        "sp_global": idata_sp_global,
+        "sp_individual": idata_sp_individual,
+        "sp_mix": idata_sp_mix,
+    }
+)
+cmp
+```
+
+```python
+az.plot_compare(cmp, insample_dev=False);
+```
+
+Mixed model has best LOO.
+Though errors for mix and individual overlap.
+`sp_mix` and `sp_individual` are penalized harder than `sp_global`—the
+distance between the empty and black circle is shorter for `sp_global`.
+There is also warnings that estimated shape parameter of Pareto distribution is greater than 0.7.
