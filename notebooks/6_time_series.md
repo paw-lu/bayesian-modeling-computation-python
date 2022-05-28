@@ -215,6 +215,79 @@ Some problems
   We expect uncertainty to increase
   when we forecast further into the future.
 
-```python
 
+### Design matrices for time series
+
+
+Sesonaility components are usually sationary—the
+means and covariances remain invariant across time—with
+easy to estimate parameters.
+Most time series involves desinging latent process that realistically captures the non-stationary trends.
+
+One approach is using local linear processes
+for the trend component.
+It is a smooth trend that is linear within some range,
+with an intercept and coefficient that changes—or
+drifts—slowly
+over the observed time span.
+Prophet uses a semi-smooth step linear function to model the trend.
+By allowing the slope to change at specific breakpoints,
+we can genereate a trend line
+that can caputre long-term trend much better
+than a straight line.
+
+$$
+g(t) = (k + \mathbf{A}\delta) t + (m + \mathbf{A} \gamma)
+$$
+
+where $k$ is the global growth rate,
+$\delta$ is a vector of rate adjustements at each point,
+$m$ is the global intercept,
+$\mathbf{A}$ is a matrix of shape $n_t$, $n_s$—where
+$n_s$ is the number of change points.
+At time $t$,
+$\mathbf{A}$ accumulates the drift effect $\delta$ fo the slope.
+$\gamma$ is set to $-s_j \times \delta_j$—where
+$s_j$ is the time location of the $n_s$ change points.
+A regularized prior—often
+$\text{Laplace}$—is
+chosen for $\delta$ to
+express that we don't expect to see a sudden or large change in the slope.
+
+```python
+n_changepoints = 8
+n_tp = 500
+t = np.linspace(0, 1, n_tp)
+s = np.linspace(0, 1, n_changepoints + 2)[1:-1]
+A = t[:, None] > s
+
+k = 2.5
+m = 40
+rng = np.random.default_rng()
+delta = rng.laplace(0.1, size=n_changepoints)
+growth = (k + A @ delta) * t
+offset = m + A @ (-s * delta)
+trend = growth + offset
 ```
+
+```python
+_, (ax1, ax2, ax3, ax4) = plt.subplots(4, figsize=(10, 10))
+ax1.set_title(r"$\mathbf{A}$")
+ax1.imshow(A.T, cmap="cet_gray_r", aspect="auto", interpolation="none")
+growth_title = r"$(k + \mathbf{A}\delta) t$"
+ax2.set_title(growth_title)
+ax2.plot(t, growth, lw=2)
+offset_title  = r"$m + \mathbf{A} \gamma$"
+ax3.set_title(offset_title)
+ax3.plot(t, offset, lw=2)
+ax4.plot(t, trend, lw=2)
+ax4.set_title(f"{growth_title} $+$ {offset_title}")
+plt.tight_layout();
+```
+
+We usually specify how many change points there are
+so $\mathbf{A}$ can be generated statically.
+One approach is to specify more points than you beleive the time series actually displays,
+and place a more spares prior $\delta$
+to regulate the posterior towards 0.
+Automatic changepoint detection is also possible.
